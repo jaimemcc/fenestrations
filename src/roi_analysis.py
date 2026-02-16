@@ -381,10 +381,12 @@ def compute_summary_df(centroids_df: pd.DataFrame, stub: str) -> pd.DataFrame:
     )
 
 
-def run_stub(datafolder: str | Path, stub: str, max_k: int = 10) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def run_stub(datafolder: str | Path, stub: str, max_k: int = 10, tif_dir: str | Path | None = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    if tif_dir is None:
+        tif_dir = datafolder
     _, masks = load_segmentation(datafolder, stub)
-    pixel_size = get_pixel_size(datafolder, stub)
-    image = load_image(datafolder, stub)
+    pixel_size = get_pixel_size(tif_dir, stub)
+    image = load_image(tif_dir, stub)
 
     centroids_df = compute_centroids_df(masks, pixel_size, stub=stub)
     centroids_df, _ = compute_neighbor_stats(centroids_df, max_k=max_k)
@@ -449,13 +451,13 @@ def run_stub(datafolder: str | Path, stub: str, max_k: int = 10) -> Tuple[pd.Dat
 
 
 def run_batch(
-    datafolder: str | Path, stubs: Iterable[str], max_k: int = 10
+    datafolder: str | Path, stubs: Iterable[str], max_k: int = 10, tif_dir: str | Path | None = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     rois_list = []
     summary_list = []
 
     for stub in stubs:
-        rois_df, summary_df = run_stub(datafolder, stub, max_k=max_k)
+        rois_df, summary_df = run_stub(datafolder, stub, max_k=max_k, tif_dir=tif_dir)
         rois_list.append(rois_df)
         summary_list.append(summary_df)
 

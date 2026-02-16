@@ -1,3 +1,40 @@
+"""
+Assemble ROI Data from Segmentation Files
+
+This script processes segmentation files (.npy) and their corresponding TIF images
+to extract ROI (Region of Interest) data and generate summary statistics.
+
+Usage:
+    # Basic usage - process all *_seg.npy files in the data directory
+    python assemble_data.py
+
+    # Specify custom input directory
+    python assemble_data.py --input /path/to/segmentation/files
+
+    # Specify separate directory for TIF files
+    python assemble_data.py --input /path/to/npy --tif-input /path/to/tif
+
+    # Append to existing output instead of overwriting
+    python assemble_data.py --append --output data/roi_data.pickle
+
+    # Custom output path
+    python assemble_data.py --output /path/to/output.pickle
+
+Arguments:
+    --input         Directory containing *_seg.npy segmentation files (default: data/)
+    --tif-input     Directory containing .tif image files (default: same as --input)
+    --append        Append results to existing output pickle file instead of overwriting
+    --output        Output pickle file path (default: data/roi_data.pickle)
+
+Output:
+    A pickle file containing a dictionary with two DataFrames:
+    - 'rois': Detailed ROI measurements for each region
+    - 'summary': Summary statistics for each processed image
+
+The script automatically adds an 'id' column derived from the stub filenames and
+handles deduplication when appending to existing data.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -19,20 +56,50 @@ def _default_data_dir() -> Path:
 
 def _collect_stubs(npy_dir: Path, tif_dir: Path) -> list[str]:
     seg_paths = list(npy_dir.glob("*_seg.npy"))
+    use_recursive = False
     if not seg_paths:
         seg_paths = list(npy_dir.rglob("*_seg.npy"))
+        use_recursive = True
         if seg_paths:
             print(f"No .npy files found in {npy_dir}, searching recursively")
 
     stubs: list[str] = []
     for seg_path in sorted(seg_paths):
-        stub = get_stub(seg_path)
-        if stub.endswith("_seg"):
-            stub = stub[:-4]
+        # If files are in subdirectories, preserve relative path
+        if use_recursive:
+            # Get path relative to npy_dir
+            try:
+                rel_path = seg_path.relative_to(npy_dir)
+                # Remove _seg.npy suffix to get stub with relative path
+                stub = str(rel_path.parent / rel_path.stem)
+                if stub.endswith("_seg"):
+                    stub = stub[:-4]
+                # Normalize path separators to forward slashes
+                stub = stub.replace("\\", "/")
+                if stub.startswith("./"):
+                    stub = stub[2:]
+            except ValueError:
+                # Fallback if relative path fails
+                stub = get_stub(seg_path)
+                if stub.endswith("_seg"):
+                    stub = stub[:-4]
+        else:
+            stub = get_stub(seg_path)
+            if stub.endswith("_seg"):
+                stub = stub[:-4]
+        
+        # Check for matching tif file
         tif_path = tif_dir / f"{stub}.tif"
         if not tif_path.exists():
-            print(f"Warning: missing tif for {stub}, skipping")
-            continue
+            # Try recursive search
+            filename_only = Path(stub).name
+            recursive_paths = list(tif_dir.rglob(f"{filename_only}.tif"))
+            if recursive_paths:
+                tif_path = recursive_paths[0]
+                print(f"Found {filename_only}.tif recursively at {tif_path}")
+            else:
+                print(f"Warning: missing tif for {stub}, skipping")
+                continue
         stubs.append(stub)
     return stubs
 
@@ -101,7 +168,7 @@ def main() -> int:
     if not stubs:
         raise ValueError(f"No stubs found in {input_dir}")
 
-    rois_df, summary_df = run_batch(input_dir, stubs)
+    rois_df, summary_df = run_batch(input_dir, stubs, tif_dir=tif_dir)
     rois_df = _add_id_column(rois_df)
     summary_df = _add_id_column(summary_df)
 
