@@ -206,3 +206,4 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 data/*
+src/__pycache__/roi_analysis.cpython-310.pyc
