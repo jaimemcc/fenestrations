@@ -1,0 +1,16 @@
+[workspace]
+authors = ["Jaime McCutcheon <j.mccutcheon@uit.no>"]
+channels = ["conda-forge"]
+name = "fenestrations"
+platforms = ["win-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = "==3.12"
+pandas = ">=3.0.1,<4"
+numpy = ">=2.4.2,<3"
+matplotlib = ">=3.10.8,<4"
+scipy = ">=1.17.1,<2"
+tifffile = ">=2026.2.20,<2027"
