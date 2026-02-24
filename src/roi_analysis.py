@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Tuple
 
@@ -13,6 +14,46 @@ def get_stub(file: str | Path) -> str:
     return Path(file).stem.split(".")[0]
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _default_pixel_size_csv() -> Path:
+    return _repo_root() / "data" / "pixel_sizes.csv"
+
+
+@lru_cache(maxsize=8)
+def _load_pixel_size_lookup(csv_path: str) -> dict[str, float]:
+    path = Path(csv_path)
+    if not path.exists():
+        return {}
+
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return {}
+
+    if "stub" not in df.columns or "pixel_size" not in df.columns:
+        return {}
+
+    lookup: dict[str, float] = {}
+    for _, row in df.iterrows():
+        stub = str(row["stub"]).strip()
+        if not stub:
+            continue
+        try:
+            lookup[stub] = float(row["pixel_size"])
+        except (TypeError, ValueError):
+            continue
+    return lookup
+
+
+def _get_pixel_size_from_csv(stub: str, csv_path: Path) -> float | None:
+    lookup = _load_pixel_size_lookup(str(csv_path.resolve()))
+    value = lookup.get(stub)
+    return float(value) if value is not None else None
+
+
 def load_segmentation(datafolder: str | Path, stub: str) -> Tuple[object, np.ndarray]:
     path = Path(datafolder) / f"{stub}_seg.npy"
     arr = np.load(path, allow_pickle=True)
@@ -24,13 +65,24 @@ def load_segmentation(datafolder: str | Path, stub: str) -> Tuple[object, np.nda
     return payload, masks
 
 
-def get_pixel_size(datafolder: str | Path, stub: str) -> float:
+def get_pixel_size(datafolder: str | Path, stub: str, pixel_size_csv: str | Path | None = None) -> float:
     file = Path(datafolder) / f"{stub}.tif"
-    with tifffile.TiffFile(file) as tif:
-        metadata = tif.sem_metadata
-        if not metadata or "ap_image_pixel_size" not in metadata:
-            raise KeyError(f"Missing ap_image_pixel_size in sem_metadata for: {file}")
-        return metadata["ap_image_pixel_size"][1]
+    try:
+        with tifffile.TiffFile(file) as tif:
+            metadata = tif.sem_metadata
+            if not metadata or "ap_image_pixel_size" not in metadata:
+                raise KeyError(f"Missing ap_image_pixel_size in sem_metadata for: {file}")
+            return float(metadata["ap_image_pixel_size"][1])
+    except Exception as tif_error:
+        csv_path = Path(pixel_size_csv) if pixel_size_csv is not None else _default_pixel_size_csv()
+        csv_value = _get_pixel_size_from_csv(stub, csv_path)
+        if csv_value is not None:
+            print(f"Using pixel size from CSV for {stub}: {csv_value}")
+            return csv_value
+        raise KeyError(
+            f"Could not read pixel size from TIFF metadata for {stub} and no CSV fallback entry "
+            f"found in {csv_path}"
+        ) from tif_error
 
 
 def compute_centroids_df(masks: np.ndarray, pixel_size: float, stub: str | None = None) -> pd.DataFrame:
@@ -710,19 +762,6 @@ def compute_summary_df(
     else:
         mean_neighbor_count = np.nan
 
-    if "cluster_neighbor_count" in centroids_df.columns:
-        valid_mask = centroids_df.get("cluster_is_valid", pd.Series(True, index=centroids_df.index)).fillna(False)
-        coords = centroids_df.loc[valid_mask, ["centroid_x", "centroid_y"]].to_numpy()
-        if coords.shape[0] > 0:
-            diffs = coords[:, None, :] - coords[None, :, :]
-            dists = np.sqrt((diffs ** 2).sum(axis=2))
-            np.fill_diagonal(dists, np.inf)
-            mean_neighbor_distance = float(np.nanmean(np.min(dists, axis=1))) if np.isfinite(dists).any() else np.nan
-        else:
-            mean_neighbor_distance = np.nan
-    else:
-        mean_neighbor_distance = np.nan
-
     mean_roi_area = centroids_df["area"].mean()
     mean_pixel_size = centroids_df["pixel_size"].mean()
     mean_diameter_area = centroids_df["diameter_area"].mean()
@@ -775,24 +814,27 @@ def compute_summary_df(
         mean_cluster_neighbor_distance = np.nan
 
     # Convert pixel distances to physical units
-    if np.isfinite(mean_neighbor_distance) and np.isfinite(mean_pixel_size):
-        mean_neighbor_distance_phys = mean_neighbor_distance * mean_pixel_size
-    else:
-        mean_neighbor_distance_phys = np.nan
-
     if np.isfinite(mean_cluster_neighbor_distance) and np.isfinite(mean_pixel_size):
         mean_cluster_neighbor_distance_phys = mean_cluster_neighbor_distance * mean_pixel_size
     else:
         mean_cluster_neighbor_distance_phys = np.nan
 
     # Recalculate porosity with physical units (dimensionless)
-    porosity_square = mean_roi_area / (mean_neighbor_distance_phys ** 2) if np.isfinite(mean_neighbor_distance_phys) else np.nan
-    porosity_hex = mean_roi_area / ((np.sqrt(3) / 2) * (mean_neighbor_distance_phys ** 2)) if np.isfinite(mean_neighbor_distance_phys) else np.nan
+    porosity_square = (
+        mean_roi_area / (mean_cluster_neighbor_distance_phys ** 2)
+        if np.isfinite(mean_cluster_neighbor_distance_phys)
+        else np.nan
+    )
+    porosity_hex = (
+        mean_roi_area / ((np.sqrt(3) / 2) * (mean_cluster_neighbor_distance_phys ** 2))
+        if np.isfinite(mean_cluster_neighbor_distance_phys)
+        else np.nan
+    )
 
     w = np.clip((mean_neighbor_count - 4) / 2, 0, 1) if np.isfinite(mean_neighbor_count) else np.nan
-    if np.isfinite(mean_neighbor_distance_phys):
-        cell_area_blend = w * ((np.sqrt(3) / 2) * (mean_neighbor_distance_phys ** 2)) + (1 - w) * (
-            mean_neighbor_distance_phys ** 2
+    if np.isfinite(mean_cluster_neighbor_distance_phys):
+        cell_area_blend = w * ((np.sqrt(3) / 2) * (mean_cluster_neighbor_distance_phys ** 2)) + (1 - w) * (
+            mean_cluster_neighbor_distance_phys ** 2
         )
         porosity_blend = mean_roi_area / cell_area_blend
     else:
@@ -802,19 +844,17 @@ def compute_summary_df(
         {
             "stub": [stub],
             "mean_neighbor_count": [mean_neighbor_count],
-            "mean_neighbor_distance": [mean_neighbor_distance],
-            "mean_neighbor_distance_phys": [mean_neighbor_distance_phys],
-            "mean_cluster_neighbor_distance": [mean_cluster_neighbor_distance],
-            "mean_cluster_neighbor_distance_phys": [mean_cluster_neighbor_distance_phys],
-            "mean_roi_area": [mean_roi_area],
-            "mean_pixel_size": [mean_pixel_size],
-            "mean_diameter_area": [mean_diameter_area],
-            "mean_diameter_major": [mean_diameter_major],
-            "mean_diameter_minor": [mean_diameter_minor],
-            "mean_diameter_four_axis": [mean_diameter_four_axis],
-            "mean_profile_major": [mean_profile_major],
-            "mean_profile_minor": [mean_profile_minor],
-            "mean_four_axis": [None],  # Will be set in run_stub
+            "mean_cluster_neighbor_distance_px": [mean_cluster_neighbor_distance],
+            "mean_cluster_neighbor_distance_nm": [mean_cluster_neighbor_distance_phys],
+            "mean_roi_area_nm2": [mean_roi_area],
+            "mean_pixel_size_nm_per_px": [mean_pixel_size],
+            "mean_diameter_area_nm": [mean_diameter_area],
+            "mean_diameter_major_nm": [mean_diameter_major],
+            "mean_diameter_minor_nm": [mean_diameter_minor],
+            "mean_diameter_four_axis_nm": [mean_diameter_four_axis],
+            "mean_profile_major_smpls": [mean_profile_major],
+            "mean_profile_minor_smpls": [mean_profile_minor],
+            "mean_four_axis_smpls": [None],  # Will be set in run_stub
             "porosity_square": [porosity_square],
             "porosity_hex": [porosity_hex],
             "porosity_blend": [porosity_blend],
@@ -945,9 +985,9 @@ def run_stub(datafolder: str | Path, stub: str, max_k: int = 10, tif_dir: str | 
         mean_step_four_axis_px=mean_step_four_axis_px,
     )
     summary_df = summary_df.assign(
-        mean_profile_major=[mean_profile_major],
-        mean_profile_minor=[mean_profile_minor],
-        mean_four_axis=[mean_four_axis],
+        mean_profile_major_smpls=[mean_profile_major],
+        mean_profile_minor_smpls=[mean_profile_minor],
+        mean_four_axis_smpls=[mean_four_axis],
     )
 
     return centroids_df, summary_df

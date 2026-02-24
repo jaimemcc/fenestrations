@@ -17,6 +17,9 @@ Usage:
     # Append to existing output instead of overwriting
     python assemble_data.py --append --output data/roi_data.pickle
 
+    # Continue processing remaining stubs even if some fail
+    python assemble_data.py --continue-on-error
+
     # Custom output path
     python assemble_data.py --output /path/to/output.pickle
 
@@ -24,6 +27,7 @@ Arguments:
     --input         Directory containing *_seg.npy segmentation files (default: data/)
     --tif-input     Directory containing .tif image files (default: same as --input)
     --append        Append results to existing output pickle file instead of overwriting
+    --continue-on-error Continue processing other stubs if one fails
     --output        Output pickle file path (default: data/roi_data.pickle)
 
 Output:
@@ -150,6 +154,41 @@ def _merge_dedup(existing: pd.DataFrame, new: pd.DataFrame, subset: list[str]) -
     return merged.drop_duplicates(keep="last")
 
 
+def _run_batch_with_progress(
+    input_dir: Path,
+    stubs: list[str],
+    tif_dir: Path,
+    continue_on_error: bool = False,
+) -> Tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    rois_frames: list[pd.DataFrame] = []
+    summary_frames: list[pd.DataFrame] = []
+    failed_stubs: list[str] = []
+
+    total = len(stubs)
+    for index, stub in enumerate(stubs, start=1):
+        print(f"[{index}/{total}] Processing stub: {stub}")
+        try:
+            rois_part, summary_part = run_batch(input_dir, [stub], tif_dir=tif_dir)
+            rois_frames.append(rois_part)
+            summary_frames.append(summary_part)
+            print(
+                f"[{index}/{total}] Completed stub: {stub} "
+                f"(rois={len(rois_part)}, summary={len(summary_part)})"
+            )
+        except Exception as exc:
+            print(f"[{index}/{total}] Error processing stub: {stub}")
+            print(f"Error details: {exc}")
+            if continue_on_error:
+                failed_stubs.append(stub)
+                print(f"[{index}/{total}] Continuing after error")
+                continue
+            raise
+
+    rois_df = pd.concat(rois_frames, ignore_index=True) if rois_frames else pd.DataFrame()
+    summary_df = pd.concat(summary_frames, ignore_index=True) if summary_frames else pd.DataFrame()
+    return rois_df, summary_df, failed_stubs
+
+
 def main() -> int:
     default_input = _default_data_dir()
     default_tif = None
@@ -159,16 +198,29 @@ def main() -> int:
     parser.add_argument("--input", type=Path, default=default_input, help="Folder with *_seg.npy files.")
     parser.add_argument("--tif-input", type=Path, default=default_tif, help="Folder with .tif files.")
     parser.add_argument("--append", action="store_true", help="Append to existing output pickle.")
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Continue processing remaining stubs if one fails.",
+    )
     parser.add_argument("--output", type=Path, default=default_output, help="Output pickle path.")
     args = parser.parse_args()
 
     input_dir = args.input
     tif_dir = args.tif_input if args.tif_input is not None else input_dir
+    print(f"Scanning segmentation files in: {input_dir}")
+    print(f"Using TIF directory: {tif_dir}")
     stubs = _collect_stubs(input_dir, tif_dir)
     if not stubs:
         raise ValueError(f"No stubs found in {input_dir}")
+    print(f"Found {len(stubs)} stub(s) to process")
 
-    rois_df, summary_df = run_batch(input_dir, stubs, tif_dir=tif_dir)
+    rois_df, summary_df, failed_stubs = _run_batch_with_progress(
+        input_dir,
+        stubs,
+        tif_dir,
+        continue_on_error=args.continue_on_error,
+    )
     rois_df = _add_id_column(rois_df)
     summary_df = _add_id_column(summary_df)
 
@@ -186,6 +238,10 @@ def main() -> int:
     print(f"Saved ROIs: {len(rois_df)} rows")
     print(f"Saved summary: {len(summary_df)} rows")
     print(f"Output: {args.output}")
+    if failed_stubs:
+        print(f"Failed stubs: {len(failed_stubs)}")
+        for stub in failed_stubs:
+            print(f" - {stub}")
     return 0
 
 
