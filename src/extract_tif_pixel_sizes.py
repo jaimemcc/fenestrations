@@ -7,13 +7,13 @@ from typing import Any
 import pandas as pd
 import tifffile
 
+from roi_analysis import normalize_stub_path
+
 
 def _stub_from_tif_path(tif_path: Path, root_dir: Path) -> str:
     rel = tif_path.relative_to(root_dir)
-    stub = str(rel.parent / rel.stem).replace("\\", "/")
-    if stub.startswith("./"):
-        stub = stub[2:]
-    return stub
+    stub = str(rel.parent / rel.stem)
+    return normalize_stub_path(stub)
 
 
 def _parse_pixel_size_from_sem_metadata(metadata: dict[str, Any], tif_path: Path) -> float:

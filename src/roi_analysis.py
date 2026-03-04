@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+import re
 from typing import Iterable, Tuple
 
 import numpy as np
@@ -10,8 +11,36 @@ import tifffile
 from scipy.ndimage import map_coordinates
 
 
+_STUB_PREFIX_PATTERN = re.compile(r"^(FAS|PR)(?:_)?(\d{1,2})(?:-)?_(.+)$")
+
+
+def normalize_stub(stub: str) -> str:
+    name = str(stub).strip()
+    match = _STUB_PREFIX_PATTERN.match(name)
+    if not match:
+        return name
+
+    code, number_text, suffix = match.groups()
+    number = int(number_text)
+    if not (1 <= number <= 24):
+        return name
+    return f"{code}{number}_{suffix}"
+
+
+def normalize_stub_path(stub: str) -> str:
+    raw = str(stub).replace("\\", "/")
+    if raw.startswith("./"):
+        raw = raw[2:]
+
+    parts = raw.split("/")
+    if not parts:
+        return raw
+    parts[-1] = normalize_stub(parts[-1])
+    return "/".join(parts)
+
+
 def get_stub(file: str | Path) -> str:
-    return Path(file).stem.split(".")[0]
+    return normalize_stub(Path(file).stem.split(".")[0])
 
 
 def _repo_root() -> Path:
@@ -38,11 +67,13 @@ def _load_pixel_size_lookup(csv_path: str) -> dict[str, float]:
 
     lookup: dict[str, float] = {}
     for _, row in df.iterrows():
-        stub = str(row["stub"]).strip()
+        stub = normalize_stub_path(str(row["stub"]).strip())
         if not stub:
             continue
         try:
-            lookup[stub] = float(row["pixel_size"])
+            value = float(row["pixel_size"])
+            lookup[stub] = value
+            lookup[normalize_stub(stub)] = value
         except (TypeError, ValueError):
             continue
     return lookup
@@ -50,11 +81,15 @@ def _load_pixel_size_lookup(csv_path: str) -> dict[str, float]:
 
 def _get_pixel_size_from_csv(stub: str, csv_path: Path) -> float | None:
     lookup = _load_pixel_size_lookup(str(csv_path.resolve()))
-    value = lookup.get(stub)
+    normalized_stub = normalize_stub_path(stub)
+    value = lookup.get(normalized_stub)
+    if value is None:
+        value = lookup.get(normalize_stub(stub))
     return float(value) if value is not None else None
 
 
 def load_segmentation(datafolder: str | Path, stub: str) -> Tuple[object, np.ndarray]:
+    stub = normalize_stub_path(stub)
     path = Path(datafolder) / f"{stub}_seg.npy"
     arr = np.load(path, allow_pickle=True)
     payload = arr.item() if arr.ndim == 0 and arr.dtype == object else arr
@@ -66,6 +101,7 @@ def load_segmentation(datafolder: str | Path, stub: str) -> Tuple[object, np.nda
 
 
 def get_pixel_size(datafolder: str | Path, stub: str, pixel_size_csv: str | Path | None = None) -> float:
+    stub = normalize_stub_path(stub)
     file = Path(datafolder) / f"{stub}.tif"
     try:
         with tifffile.TiffFile(file) as tif:
@@ -124,6 +160,7 @@ def compute_centroids_df(masks: np.ndarray, pixel_size: float, stub: str | None 
 
 
 def load_image(datafolder: str | Path, stub: str) -> np.ndarray:
+    stub = normalize_stub_path(stub)
     raw = tifffile.imread(Path(datafolder) / f"{stub}.tif")
     return raw[0] if raw.ndim > 2 else raw
 
@@ -863,7 +900,14 @@ def compute_summary_df(
     )
 
 
-def run_stub(datafolder: str | Path, stub: str, max_k: int = 10, tif_dir: str | Path | None = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def run_stub(
+    datafolder: str | Path,
+    stub: str,
+    max_k: int = 10,
+    tif_dir: str | Path | None = None,
+    compute_summary: bool = True,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    stub = normalize_stub_path(stub)
     if tif_dir is None:
         tif_dir = datafolder
     _, masks = load_segmentation(datafolder, stub)
@@ -974,35 +1018,49 @@ def run_stub(datafolder: str | Path, stub: str, max_k: int = 10, tif_dir: str | 
     )
 
     centroids_df["diameter_area"] = 2 * np.sqrt(centroids_df["area"] / np.pi)
-    summary_df = compute_summary_df(
-        centroids_df,
-        stub,
-        mean_profile_major=mean_profile_major,
-        mean_profile_minor=mean_profile_minor,
-        mean_four_axis=mean_four_axis,
-        mean_step_major_px=mean_step_major_px,
-        mean_step_minor_px=mean_step_minor_px,
-        mean_step_four_axis_px=mean_step_four_axis_px,
-    )
-    summary_df = summary_df.assign(
-        mean_profile_major_smpls=[mean_profile_major],
-        mean_profile_minor_smpls=[mean_profile_minor],
-        mean_four_axis_smpls=[mean_four_axis],
-    )
+    if compute_summary:
+        summary_df = compute_summary_df(
+            centroids_df,
+            stub,
+            mean_profile_major=mean_profile_major,
+            mean_profile_minor=mean_profile_minor,
+            mean_four_axis=mean_four_axis,
+            mean_step_major_px=mean_step_major_px,
+            mean_step_minor_px=mean_step_minor_px,
+            mean_step_four_axis_px=mean_step_four_axis_px,
+        )
+        summary_df = summary_df.assign(
+            mean_profile_major_smpls=[mean_profile_major],
+            mean_profile_minor_smpls=[mean_profile_minor],
+            mean_four_axis_smpls=[mean_four_axis],
+        )
+    else:
+        summary_df = pd.DataFrame()
 
     return centroids_df, summary_df
 
 
 def run_batch(
-    datafolder: str | Path, stubs: Iterable[str], max_k: int = 10, tif_dir: str | Path | None = None
+    datafolder: str | Path,
+    stubs: Iterable[str],
+    max_k: int = 10,
+    tif_dir: str | Path | None = None,
+    compute_summary: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     rois_list = []
     summary_list = []
 
     for stub in stubs:
-        rois_df, summary_df = run_stub(datafolder, stub, max_k=max_k, tif_dir=tif_dir)
+        rois_df, summary_df = run_stub(
+            datafolder,
+            stub,
+            max_k=max_k,
+            tif_dir=tif_dir,
+            compute_summary=compute_summary,
+        )
         rois_list.append(rois_df)
-        summary_list.append(summary_df)
+        if compute_summary:
+            summary_list.append(summary_df)
 
     all_rois_df = pd.concat(rois_list, ignore_index=True) if rois_list else pd.DataFrame()
     all_summary_df = pd.concat(summary_list, ignore_index=True) if summary_list else pd.DataFrame()
