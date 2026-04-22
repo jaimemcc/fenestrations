@@ -215,6 +215,7 @@ src/__pycache__/roi_analysis.cpython-310.pyc
 # data and results
 data/
 results/
+figs/paper1/panels
 *.pkl
 *.pickle
 *.npy
