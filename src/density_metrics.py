@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -162,3 +163,77 @@ def add_union_density(
 
     summary_df[density_col] = summary_df["roi_count"] / summary_df[area_col]
     return summary_df
+
+
+# ---------------------------------------------------------------------------
+# Diameter-based porosity
+# ---------------------------------------------------------------------------
+
+#: Default mapping of diameter column → output suffix used when none is supplied.
+_DEFAULT_DIAMETER_COLS: dict[str, str] = {
+    "mean_diameter_area_nm": "area",
+    "mean_diameter_major_nm": "major",
+    "mean_diameter_minor_nm": "minor",
+    "mean_diameter_four_axis_nm": "four_axis",
+}
+
+
+def add_porosity_from_diameters(
+    summary_df: pd.DataFrame,
+    diameter_cols: dict[str, str] | None = None,
+    cell_area_col: str = "cell_area_blend_nm2",
+    output_prefix: str = "porosity_blend",
+) -> pd.DataFrame:
+    """Add diameter-based porosity columns to *summary_df*.
+
+    For each diameter estimate, the circular fenestration area is computed as
+    ``π * (d / 2)²`` (in nm²) and divided by *cell_area_col* to give a
+    dimensionless porosity fraction.
+
+    Parameters
+    ----------
+    summary_df:
+        Per-stub summary DataFrame.  Must contain *cell_area_col* (add it
+        first with :func:`add_lattice_density_columns`).
+    diameter_cols:
+        Mapping of ``{diameter_column_name: output_suffix}``.  Defaults to
+        all four standard mean-diameter estimates::
+
+            {
+                "mean_diameter_area_nm":      "area",
+                "mean_diameter_major_nm":     "major",
+                "mean_diameter_minor_nm":     "minor",
+                "mean_diameter_four_axis_nm": "four_axis",
+            }
+
+    cell_area_col:
+        Column containing the lattice cell area in nm².  Defaults to
+        ``"cell_area_blend_nm2"`` (blend geometry).
+    output_prefix:
+        Prefix for the new columns.  The output column names are
+        ``{output_prefix}_{suffix}``, e.g. ``porosity_blend_area``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of *summary_df* with one new column per diameter estimate.
+    """
+    if diameter_cols is None:
+        diameter_cols = _DEFAULT_DIAMETER_COLS
+
+    if cell_area_col not in summary_df.columns:
+        raise KeyError(
+            f"summary_df is missing '{cell_area_col}'. "
+            "Call add_lattice_density_columns() first."
+        )
+
+    out = summary_df.copy()
+    cell_area = out[cell_area_col]
+
+    for diam_col, suffix in diameter_cols.items():
+        if diam_col not in out.columns:
+            raise KeyError(f"summary_df is missing diameter column '{diam_col}'.")
+        circular_area = math.pi * (out[diam_col] / 2.0) ** 2
+        out[f"{output_prefix}_{suffix}"] = circular_area / cell_area
+
+    return out
