@@ -120,34 +120,59 @@ def _add_roi_profile_diameter_columns(rois_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _add_summary_profile_means(rois_df: pd.DataFrame, summary_df: pd.DataFrame) -> pd.DataFrame:
-    if "stub" not in rois_df.columns or "stub" not in summary_df.columns:
+    """Compute profile-based diameter estimates by applying each method to the per-stub
+    averaged profile (mean_profile_{axis}_smpls in summary_df).  This is preferred over
+    averaging per-ROI diameters because individual ROI profiles are too noisy for the
+    nonlinear threshold / derivative operations."""
+    required_summary = {
+        "stub",
+        "mean_profile_major_smpls",
+        "mean_profile_minor_smpls",
+        "mean_pixel_size_nm_per_px",
+    }
+    required_rois = {"stub", "step_major_nm", "step_minor_nm"}
+    if not required_summary.issubset(summary_df.columns) or not required_rois.issubset(rois_df.columns):
         return summary_df.copy()
 
-    profile_cols = [
-        "diameter_p2p_major_nm",
-        "diameter_p2p_minor_nm",
-        "diameter_p2p_nm",
-        "diameter_fwhm_major_nm",
-        "diameter_fwhm_minor_nm",
-        "diameter_fwhm_nm",
-        "diameter_deriv_major_nm",
-        "diameter_deriv_minor_nm",
-        "diameter_deriv_nm",
-    ]
-    available = [col for col in profile_cols if col in rois_df.columns]
-    if not available:
-        return summary_df.copy()
-
-    means_df = (
-        rois_df.groupby("stub", as_index=False)[available]
+    step_per_stub = (
+        rois_df.groupby("stub", as_index=False)[["step_major_nm", "step_minor_nm"]]
         .mean(numeric_only=True)
-        .rename(columns={col: f"mean_{col}" for col in available})
     )
-    return summary_df.drop(columns=list(means_df.columns.difference(["stub"])), errors="ignore").merge(
-        means_df,
-        on="stub",
-        how="left",
-    )
+    sdf = summary_df.merge(step_per_stub, on="stub", how="left")
+
+    method_fns = {
+        "p2p": lambda prof, step_nm, px: estimate_diameter_from_profile(
+            prof, px, sample_step_px=step_nm / px
+        ),
+        "fwhm": lambda prof, step_nm, px: _compute_dip_width(prof, step_nm),
+        "deriv": lambda prof, step_nm, px: _compute_dip_width_derivative(prof, step_nm),
+    }
+
+    records: list[dict] = []
+    for _, row in sdf.iterrows():
+        pixel_size = row["mean_pixel_size_nm_per_px"]
+        entry: dict = {"stub": row["stub"]}
+        for method, fn in method_fns.items():
+            diams: dict = {}
+            for axis in ("major", "minor"):
+                profile = row[f"mean_profile_{axis}_smpls"]
+                step_nm = row[f"step_{axis}_nm"]
+                if profile is None or not np.isfinite(step_nm) or not np.isfinite(pixel_size):
+                    diams[axis] = np.nan
+                    continue
+                diams[axis] = fn(np.asarray(profile, dtype=float), step_nm, pixel_size)
+            d_maj, d_min = diams["major"], diams["minor"]
+            entry[f"mean_diameter_{method}_major_nm"] = d_maj
+            entry[f"mean_diameter_{method}_minor_nm"] = d_min
+            entry[f"mean_diameter_{method}_nm"] = (
+                np.sqrt(d_maj * d_min) if np.isfinite(d_maj) and np.isfinite(d_min) else np.nan
+            )
+        records.append(entry)
+
+    new_cols_df = pd.DataFrame(records)
+    new_cols = [c for c in new_cols_df.columns if c != "stub"]
+    out = summary_df.drop(columns=[c for c in new_cols if c in summary_df.columns], errors="ignore")
+    return out.merge(new_cols_df, on="stub", how="left")
 
 
 def add_extra_columns(
