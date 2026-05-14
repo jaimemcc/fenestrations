@@ -1,8 +1,8 @@
 [workspace]
 authors = ["Jaime McCutcheon <j.mccutcheon@uit.no>"]
 channels = ["conda-forge"]
-name = "fenestrations"
-platforms = ["win-64"]
+name = "notebook-project"
+platforms = ["win-64", "linux-64"]
 version = "0.1.0"
 
 [tasks]
