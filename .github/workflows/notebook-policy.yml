@@ -1,0 +1,24 @@
+name: notebook-policy
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0
+        with:
+          cache: true
+
+      - name: Install notebook tooling
+        run: pixi install --locked
+
+      - name: Check notebook workflow
+        run: pixi run check-notebooks

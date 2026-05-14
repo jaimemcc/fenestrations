@@ -1,0 +1,13 @@
+{
+  "workflow": {
+    "version": "0.1.0",
+    "source_repo": "jaimemcc/noisefree-notebooks",
+    "source_ref": "main"
+  },
+  "managed_roots": [
+    {
+      "source_dir": "notebooks",
+      "tracked_subdir": "text"
+    }
+  ]
+}

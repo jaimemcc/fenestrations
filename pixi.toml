@@ -7,6 +7,21 @@ version = "0.1.0"
 
 [tasks]
 
+bootstrap = "pre-commit install"
+check-notebook-policy = "python tooling/notebook_workflow/check_notebook_policy.py"
+check-notebook-sync = "python tooling/notebook_workflow/check_notebook_sync.py"
+check-notebooks = { depends-on = ["check-notebook-policy", "check-notebook-sync"] }
+sync-notebooks = "python tooling/notebook_workflow/sync_notebooks.py"
+regenerate-notebooks = "python tooling/notebook_workflow/regenerate_notebooks.py"
+untrack-managed-notebooks = "python tooling/notebook_workflow/untrack_managed_notebooks.py --apply --yes"
+preview-untrack-managed-notebooks = "python tooling/notebook_workflow/untrack_managed_notebooks.py"
+migrate-existing-notebooks-preview = "python tooling/notebook_workflow/migrate_existing_notebooks.py"
+migrate-existing-notebooks = "python tooling/notebook_workflow/migrate_existing_notebooks.py --apply-untrack --yes"
+update-notebook-workflow = "python update_notebook_workflow.py --pull-setup --skip-pixi"
+sync = { depends-on = ["sync-notebooks"] }
+regen = { depends-on = ["regenerate-notebooks"] }
+check = { depends-on = ["check-notebooks"] }
+update = { depends-on = ["update-notebook-workflow"] }
 [dependencies]
 python = "==3.13"
 pandas = ">=3.0.1,<4"
@@ -22,3 +37,5 @@ statsmodels = ">=0.14,<1"
 
 [pypi-dependencies]
 trompy = ">=0.16.5, <0.17"
+jupytext = ">=1.16"
+pre-commit = ">=3.7"

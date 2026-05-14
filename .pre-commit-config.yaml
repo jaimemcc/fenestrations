@@ -1,0 +1,13 @@
+repos:
+  - repo: local
+    hooks:
+      - id: notebook-policy
+        name: notebook-policy
+        entry: pixi run python tooling/notebook_workflow/check_notebook_policy.py --staged
+        language: system
+        pass_filenames: false
+      - id: notebook-sync
+        name: notebook-sync
+        entry: pixi run python tooling/notebook_workflow/check_notebook_sync.py
+        language: system
+        pass_filenames: false
